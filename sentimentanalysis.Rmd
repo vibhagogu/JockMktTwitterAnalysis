@@ -1,0 +1,202 @@
+---
+title: "Sentiment Analysis"
+author: "Vibha Gogu"
+date: "2022-10-13"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Code inspired from: [Towards Data Science](https://towardsdatascience.com/an-intro-to-sentiment-analysis-in-r-how-does-twitter-feel-about-baker-mayfield-cda513ed0b78)
+
+```{r}
+library(ROAuth)
+library(hms)
+library(lubridate) 
+library(tidytext)
+library(tm)
+library(glue)
+library(rtweet)
+library(plyr)
+library(stringr)
+library(dplyr)  
+library(hms)
+library(lubridate) 
+library(magrittr)
+library(tidyverse)
+library(janeaustenr)
+library(ggrepel)
+library(sentimentr)
+```
+
+```{r}
+auth_setup_default() #temporary fix to API authentication problem 
+```
+
+```{r}
+top50<- read.csv("Top50NBA.csv")
+listplayers<- as.list(top50$Player)
+finalmasterdf <- read.csv("masterdf.csv")
+```
+
+Multiple Linear Regression Model, Use data from the first week of masterdf.csv
+```{r}
+#old regression old - Accurate, but only use data the first week of finalmasterdf
+
+#og_model <- lm(roi ~ avg_sent_score + pos_perc + total_tweets + lag_avg_sent_score + lag_pos_perc + lag_total_tweets, data = firstweekdata)
+
+#summary(og_model)
+```
+
+Logistic Regression 
+```{r}
+#logit_masterdf<- finalmasterdf
+#logit_masterdf$roi<-factor(ifelse(logit_masterdf$roi<0,0,1))
+
+#logitmod <- glm(roi~ total_tweets+ as.double(avg_sent_score)+ pos_perc+ lag_avg_sent_score, data=logit_masterdf, family = binomial)
+#summary(logitmod)
+```
+
+```{r}
+df <- data.frame(matrix(ncol=6, nrow=0))
+colnames(df)<- c("player", "date","num_pos", "num_neg", "num_neutral","sum_sentiment score")
+```
+
+```{r}
+todayMidnight <- "1590207557867606017"
+yesterdayMidnight <- "1589845229448093698"
+```
+
+```{r}
+jockmktfunc <- function(playerlist, since_id_val, max_id_val,dateToEnter)
+{
+  for (player in playerlist){
+    print(player)
+    tweets_data <- search_tweets(player,include_rts = FALSE, lang = 'en', n = 5000, since_id = since_id_val, max_id = max_id_val, retryonratelimit = TRUE)
+  
+    tweets_data <- tweets_data[,1:30]
+    
+    #filter out extra filler words
+    words_data <- tweets_data %>% select(text)  %>% 
+                  unnest_tokens(word, text)
+    words_data %>% count(word, sort = TRUE)
+    
+    words_data <- words_data %>% filter(!word %in% c('https', 't.co', 'he\'s', 'i\'m', 'it\'s'))
+    words_data2 <- words_data %>%
+      anti_join(stop_words) %>%
+      count(word, sort = TRUE)
+    head(words_data2, n = 10)
+    
+    #incorporate with sentiment lexicon 
+    words_data2 %>%
+          inner_join(get_sentiments("bing")) %>%
+          count(sentiment, sort = TRUE)
+  
+    print("tweets_data$text")
+    print(nrow(tweets_data))
+    
+    if (nrow(tweets_data) > 0){
+      tweet_sentences_data <- sentiment(get_sentences(tweets_data$text)) %>% 
+      group_by(element_id) %>% 
+      summarize(meanSentiment = mean(sentiment))
+    head(tweet_sentences_data)
+    
+    df[nrow(df)+1, ] <- c(
+      player = player,
+      date = dateToEnter, 
+      num_pos=sum(tweet_sentences_data$meanSentiment > 0), 
+      num_neg=sum(tweet_sentences_data$meanSentiment < 0), 
+      num_neutral=sum(tweet_sentences_data$meanSentiment == 0), 
+      sum_sentimentscore = sum(tweet_sentences_data$meanSentiment)) 
+    }
+
+  }
+  
+  return(df)
+}
+```
+
+```{r}
+# jockmktfunc(listplayers)
+df_11_09 <- jockmktfuncSasha(listplayers, yesterdayMidnight,todayMidnight,"2022-11-09")
+df_11_08 <- jockmktfuncSasha(listplayers, yesterdayMidnight,NULL,"2022-11-08")
+```
+
+```{r}
+## combine todays df and the day before's df 
+data09 <- rbind(df_11_08, df_11_09)
+```
+
+```{r}
+## Calculate total_tweets and avg_sent_score and percentage of pos/neg tweets 
+data09<- data09%>%
+  mutate(total_tweets = as.integer(num_pos)+as.integer(num_neutral)+as.integer(num_neg))
+data09<- data09%>%
+  rename(sum_sent_score = `sum_sentiment score`) %>%
+  mutate(avg_sent_score = as.double(sum_sent_score)/as.integer(total_tweets))
+
+data09<- data09%>%
+  mutate(pos_perc = as.integer(num_pos) / as.integer(total_tweets))
+```
+
+```{r}
+#creating lag variables (day before)
+data09 <- data09 %>%                           
+  group_by(player) %>%
+  dplyr::mutate(lag_sum_sent_score = lag(sum_sent_score, n = 1, default = NA)) %>%
+  dplyr::mutate(lag_avg_sent_score = lag(avg_sent_score, n = 1, default = NA)) %>%
+  dplyr::mutate(lag_total_tweets = lag(total_tweets, n = 1, default = NA)) %>%
+  dplyr::mutate(lag_pos_perc = lag(pos_perc, n = 1, default = NA))
+```
+
+```{r}
+# Use original regression to precdict ROI
+data09<- data09 %>%
+  mutate(predictedroi = 7.278e-01 + 1.288e+01*avg_sent_score + (-3.645e+00)*pos_perc + 1.521e-04*total_tweets + (-6.687e+00)*lag_avg_sent_score + 1.436e+00*lag_pos_perc + lag_total_tweets* (-1.301e-04))
+```
+
+```{r}
+#Gets players who are playing today 
+#import player list CSV from Jock MKT for the market you're interested in 
+test <- read.csv("jockmkt11_09.csv")
+test <- as.list(test$NAME)
+test <- intersect(listplayers, test)
+
+#filtered to people just playing today
+playingtoday <- subset(data09, player %in% test)
+```
+
+```{r}
+##Ranking 
+x <- dense_rank(desc(playingtoday$predictedroi))
+x
+playingtoday$d_rank<- x
+```
+
+
+```{r}
+# Go through steps to predict the probability that the player's ROI will be positive 
+playingtoday <- playingtoday %>%
+  mutate(pred_log_odd = 1.443 + 6.393e-04*total_tweets + 2.661e+01*avg_sent_score - 5.533 * pos_perc - 1.085e+01*lag_avg_sent_score)
+
+playingtoday <- playingtoday %>%
+  mutate(odds = exp(pred_log_odd))
+
+playingtoday <- playingtoday %>%
+  mutate(prob = odds/(1+odds))
+```
+
+```{r}
+playingtoday <- playingtoday %>%
+  filter(date == "2022-11-09") %>%
+  select(player, date, num_pos, num_neg, total_tweets, lag_total_tweets, sum_sent_score, lag_sum_sent_score, predictedroi, prob)
+```
+
+
+
